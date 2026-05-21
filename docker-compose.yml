@@ -1,0 +1,57 @@
+services:
+  # ── PostgreSQL Database Container ───────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: realtime_orders_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: niru
+      POSTGRES_DB: realtime_orders
+    ports:
+      - "5432:5432"
+    volumes:
+      # Persist database files in a Docker volume so data survives container restarts
+      - pgdata:/var/lib/postgresql/data
+      # Automatically seed database schema, trigger function, trigger, and sample data on first start
+      - ./server/triggers/orders_trigger.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      # Verify that PostgreSQL is fully ready to accept connections before launching the backend
+      test: ["CMD-SHELL", "pg_isready -U postgres -d realtime_orders"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: always
+
+  # ── Node.js Backend Container ───────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: realtime_orders_backend
+    environment:
+      - PORT=3000
+      - NODE_ENV=development
+      # Connect internally to the "postgres" service host
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=niru
+      - DB_NAME=realtime_orders
+      - CORS_ORIGIN=*
+      - SOCKET_PING_TIMEOUT=60000
+      - SOCKET_PING_INTERVAL=25000
+    ports:
+      - "3000:3000"
+    volumes:
+      # Bind mount host directory for live code reloading (nodemon)
+      - .:/app
+      # Do not overwrite container's node_modules with host node_modules
+      - /app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: always
+
+volumes:
+  pgdata:
+    driver: local

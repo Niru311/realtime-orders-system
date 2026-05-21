@@ -1,0 +1,1403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Orders — Realtime Dashboard</title>
+  <meta name="description" content="Live order tracking powered by PostgreSQL LISTEN/NOTIFY and Socket.IO — zero polling." />
+
+  <!-- Google Fonts: Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+  <!-- Socket.IO client -->
+  <script src="/socket.io/socket.io.js"></script>
+
+  <style>
+    /* ── Reset ─────────────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       DESIGN TOKENS
+       Brand palette: Deep Green #009B4D · Tangerine Yellow #FFCC00 · Ivory #FAF5E9
+    ═══════════════════════════════════════════════════════════════════════ */
+    :root {
+      /* ── Surfaces ── */
+      --bg:              #0C1510;   /* very dark green-charcoal */
+      --bg-elevated:     #111A14;   /* cards */
+      --bg-sunken:       #0A120D;   /* inputs, code areas */
+      --bg-hover:        #162019;   /* row / item hover */
+      --bg-active:       #1A2720;   /* pressed / selected */
+
+      /* ── Borders ── */
+      --border:          #1C2E21;   /* default border */
+      --border-muted:    #243829;   /* slightly visible */
+      --border-emphasis: #2E4A36;   /* hovered / focused context */
+
+      /* ── Text ── */
+      --text:            #EDF2EB;   /* warm off-white, not stark #fff */
+      --text-secondary:  #9DB8A5;   /* muted labels, secondary info */
+      --text-dim:        #56755E;   /* placeholders, timestamps */
+
+      /* ── Brand: Deep Green ── */
+      --green:           #009B4D;
+      --green-light:     #00C360;   /* lighter variant for text on dark */
+      --green-subtle:    rgba(0, 155, 77, 0.10);
+      --green-subtle-2:  rgba(0, 155, 77, 0.06);
+      --green-border:    rgba(0, 155, 77, 0.28);
+      --green-focus:     rgba(0, 155, 77, 0.40);
+
+      /* ── Brand: Tangerine Yellow ── */
+      --yellow:          #FFCC00;
+      --yellow-warm:     #F5C400;   /* slightly deeper for hover */
+      --yellow-subtle:   rgba(255, 204, 0, 0.09);
+      --yellow-border:   rgba(255, 204, 0, 0.25);
+      --yellow-text:     #E8B800;   /* slightly darkened for readability */
+
+      /* ── Brand: Ivory ── */
+      --ivory:           #FAF5E9;
+      --ivory-dim:       rgba(250, 245, 233, 0.06);
+      --ivory-border:    rgba(250, 245, 233, 0.08);
+
+      /* ── Semantic: Red ── */
+      --red:             #C0392B;
+      --red-light:       #E05545;
+      --red-subtle:      rgba(192, 57, 43, 0.10);
+      --red-border:      rgba(192, 57, 43, 0.28);
+
+      /* ── Semantic: Shipped blue-green ── */
+      --shipped:         #0E8F6E;
+      --shipped-subtle:  rgba(14, 143, 110, 0.10);
+      --shipped-border:  rgba(14, 143, 110, 0.28);
+
+      /* ── Utility ── */
+      --radius:          8px;
+      --radius-sm:       5px;
+      --radius-lg:       12px;
+
+      --shadow-xs: 0 1px 2px rgba(0,0,0,0.25);
+      --shadow-sm: 0 1px 4px rgba(0,0,0,0.35), 0 0 0 1px rgba(255,255,255,0.02);
+      --shadow-md: 0 4px 16px rgba(0,0,0,0.45);
+      --shadow-lg: 0 12px 40px rgba(0,0,0,0.55);
+
+      --t-fast:    0.1s ease;
+      --t:         0.18s ease;
+      --t-slow:    0.28s ease;
+    }
+
+    /* ── Base ───────────────────────────────────────────────────────────────── */
+    html { font-size: 16px; scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      font-feature-settings: "cv11", "ss01", "cv03";
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      min-height: 100vh;
+      line-height: 1.55;
+    }
+
+    /* ── Scrollbar ───────────────────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border-muted); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--border-emphasis); }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       HEADER
+    ═══════════════════════════════════════════════════════════════════════ */
+    header {
+      background: rgba(12, 21, 16, 0.88);
+      border-bottom: 1px solid var(--border);
+      height: 52px;
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(16px) saturate(1.4);
+      -webkit-backdrop-filter: blur(16px) saturate(1.4);
+    }
+
+    /* Logo */
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+    }
+
+    .logo-mark {
+      width: 26px;
+      height: 26px;
+      background: var(--green);
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .logo-mark svg { display: block; }
+
+    .logo-wordmark {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+
+    .logo-name {
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+    }
+
+    .logo-tagline {
+      font-size: 0.63rem;
+      color: var(--text-dim);
+      font-weight: 400;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    /* Header right cluster */
+    .hd-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* ── Pill / badge ─────────────────────────────────────────────────────── */
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 11px;
+      border-radius: 999px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      border: 1px solid var(--border-muted);
+      background: var(--bg-elevated);
+      color: var(--text-secondary);
+      transition: border-color var(--t), color var(--t), background var(--t);
+      cursor: default;
+      user-select: none;
+    }
+
+    .pill.connected {
+      color: var(--green-light);
+      border-color: var(--green-border);
+      background: var(--green-subtle);
+    }
+
+    .pill-btn {
+      cursor: pointer;
+      outline: none;
+      background: none;
+      font-family: inherit;
+    }
+    .pill-btn:hover {
+      border-color: var(--border-emphasis);
+      background: var(--bg-hover);
+      color: var(--text);
+    }
+
+    /* Live dot */
+    .live-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--text-dim);
+      flex-shrink: 0;
+      transition: background var(--t);
+    }
+
+    .connected .live-dot {
+      background: var(--green-light);
+      animation: livepulse 2.2s ease-in-out infinite;
+    }
+
+    @keyframes livepulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.35; }
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       PAGE LAYOUT
+    ═══════════════════════════════════════════════════════════════════════ */
+    .page {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 36px 24px 72px;
+    }
+
+    /* Page header */
+    .pg-header {
+      margin-bottom: 32px;
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .pg-titles {}
+
+    .pg-title {
+      font-size: 1.35rem;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.03em;
+      line-height: 1.15;
+      margin-bottom: 4px;
+    }
+
+    .pg-subtitle {
+      font-size: 0.78rem;
+      color: var(--text-dim);
+      letter-spacing: 0.01em;
+    }
+
+    .pg-subtitle span {
+      color: var(--green-light);
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       STAT CARDS
+    ═══════════════════════════════════════════════════════════════════════ */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+
+    .stat-card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px 20px;
+      box-shadow: var(--shadow-sm);
+      position: relative;
+      overflow: hidden;
+      transition: border-color var(--t), box-shadow var(--t);
+    }
+
+    .stat-card:hover {
+      border-color: var(--border-muted);
+      box-shadow: var(--shadow-md);
+    }
+
+    /* Subtle left accent on stat cards */
+    .stat-card::before {
+      content: '';
+      position: absolute;
+      left: 0; top: 20%; bottom: 20%;
+      width: 2px;
+      border-radius: 0 2px 2px 0;
+      background: var(--border-emphasis);
+      transition: background var(--t);
+    }
+
+    .stat-card.accent-green::before  { background: var(--green); }
+    .stat-card.accent-yellow::before { background: var(--yellow-text); }
+
+    .stat-label {
+      font-size: 0.62rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-dim);
+      margin-bottom: 10px;
+    }
+
+    .stat-value {
+      font-size: 1.8rem;
+      font-weight: 700;
+      line-height: 1;
+      letter-spacing: -0.04em;
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .stat-value.v-green  { color: var(--green-light); }
+    .stat-value.v-yellow { color: var(--yellow-text); }
+    .stat-value.v-ivory  { color: var(--ivory); }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       MAIN GRID
+    ═══════════════════════════════════════════════════════════════════════ */
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1fr 308px;
+      gap: 16px;
+      align-items: start;
+    }
+
+    @media (max-width: 880px) {
+      .main-grid { grid-template-columns: 1fr; }
+    }
+
+    /* ── Section header ─────────────────────────────────────────────────── */
+    .sec-hd {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .sec-label {
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--text-dim);
+    }
+
+    /* ── Card ───────────────────────────────────────────────────────────── */
+    .card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-sm);
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       TABLE
+    ═══════════════════════════════════════════════════════════════════════ */
+    .table-card {
+      overflow: hidden;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.83rem;
+    }
+
+    thead {
+      background: var(--bg-sunken);
+    }
+
+    th {
+      text-align: left;
+      padding: 9px 14px;
+      font-size: 0.62rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-dim);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    tbody tr {
+      transition: background var(--t-fast);
+    }
+
+    tbody tr:hover {
+      background: var(--bg-hover);
+    }
+
+    /* Cell types */
+    .c-id {
+      color: var(--text-dim);
+      font-size: 0.75rem;
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    .c-customer {
+      font-weight: 600;
+      color: var(--text);
+      font-size: 0.82rem;
+    }
+
+    .c-product {
+      color: var(--text-secondary);
+      font-size: 0.82rem;
+    }
+
+    .c-date {
+      color: var(--text-dim);
+      font-size: 0.73rem;
+      font-family: 'JetBrains Mono', monospace;
+      white-space: nowrap;
+    }
+
+    /* Flash animations — extremely restrained */
+    tr.flash-insert { animation: fi 1.2s ease; }
+    tr.flash-update { animation: fu 1.2s ease; }
+    tr.flash-delete { animation: fd 1.2s ease; }
+
+    @keyframes fi { 0%,100%{background:transparent} 35%{background:rgba(0,155,77,0.08)} }
+    @keyframes fu { 0%,100%{background:transparent} 35%{background:rgba(255,204,0,0.06)} }
+    @keyframes fd { 0%,100%{background:transparent} 35%{background:rgba(192,57,43,0.08)} }
+
+    /* ── Status badges ────────────────────────────────────────────────── */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      border: 1px solid transparent;
+      white-space: nowrap;
+    }
+
+    .badge-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .badge-pending {
+      background: var(--yellow-subtle);
+      color: var(--yellow-text);
+      border-color: var(--yellow-border);
+    }
+    .badge-pending .badge-dot { background: var(--yellow-text); }
+
+    .badge-shipped {
+      background: var(--shipped-subtle);
+      color: #3FCAA8;
+      border-color: var(--shipped-border);
+    }
+    .badge-shipped .badge-dot { background: #3FCAA8; }
+
+    .badge-delivered {
+      background: var(--green-subtle);
+      color: var(--green-light);
+      border-color: var(--green-border);
+    }
+    .badge-delivered .badge-dot { background: var(--green-light); }
+
+    /* ── Table actions ────────────────────────────────────────────────── */
+    .row-actions { display: flex; gap: 6px; }
+
+    #empty-row td {
+      text-align: center;
+      color: var(--text-dim);
+      padding: 48px;
+      font-size: 0.82rem;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       BUTTONS
+    ═══════════════════════════════════════════════════════════════════════ */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      border: 1px solid transparent;
+      border-radius: var(--radius-sm);
+      font-family: inherit;
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      padding: 6px 12px;
+      cursor: pointer;
+      transition: background var(--t), border-color var(--t), color var(--t), transform var(--t-fast);
+      white-space: nowrap;
+      line-height: 1;
+      outline: none;
+    }
+
+    .btn:active { transform: scale(0.97); }
+
+    /* Primary — filled green */
+    .btn-primary {
+      background: var(--green);
+      border-color: var(--green);
+      color: #fff;
+      font-size: 0.83rem;
+      padding: 9px 16px;
+      width: 100%;
+      border-radius: var(--radius-sm);
+    }
+    .btn-primary:hover {
+      background: #00AE57;
+      border-color: #00AE57;
+    }
+    .btn-primary:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    /* Ghost — subtle border */
+    .btn-ghost {
+      background: transparent;
+      border-color: var(--border-muted);
+      color: var(--text-secondary);
+    }
+    .btn-ghost:hover {
+      background: var(--bg-hover);
+      border-color: var(--border-emphasis);
+      color: var(--text);
+    }
+
+    /* Danger ghost */
+    .btn-danger {
+      background: transparent;
+      border-color: var(--red-border);
+      color: var(--red-light);
+    }
+    .btn-danger:hover {
+      background: var(--red-subtle);
+      border-color: rgba(192,57,43,0.45);
+    }
+
+    /* Save — green */
+    .btn-save {
+      background: var(--green);
+      border-color: var(--green);
+      color: #fff;
+      flex: 1;
+    }
+    .btn-save:hover { background: #00AE57; border-color: #00AE57; }
+
+    /* Cancel */
+    .btn-cancel {
+      background: var(--bg-sunken);
+      border-color: var(--border-muted);
+      color: var(--text-secondary);
+      flex: 1;
+    }
+    .btn-cancel:hover {
+      background: var(--bg-hover);
+      color: var(--text);
+    }
+
+    /* Small */
+    .btn-sm { padding: 4px 9px; font-size: 0.7rem; }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       FORM
+    ═══════════════════════════════════════════════════════════════════════ */
+    .form-body {
+      padding: 18px 18px 20px;
+    }
+
+    .form-group {
+      margin-bottom: 14px;
+    }
+
+    .form-label {
+      display: block;
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-dim);
+      margin-bottom: 6px;
+    }
+
+    .form-input,
+    .form-select {
+      width: 100%;
+      background: var(--bg-sunken);
+      border: 1px solid var(--border-muted);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.83rem;
+      padding: 8px 11px;
+      outline: none;
+      transition: border-color var(--t), background var(--t), box-shadow var(--t);
+      -webkit-appearance: none;
+      appearance: none;
+    }
+
+    .form-input::placeholder { color: var(--text-dim); }
+
+    .form-input:focus,
+    .form-select:focus {
+      border-color: var(--green);
+      background: rgba(0, 155, 77, 0.04);
+      box-shadow: 0 0 0 3px var(--green-subtle);
+    }
+
+    .form-select {
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%2356755E' d='M5 7L1 3h8z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      padding-right: 28px;
+      cursor: pointer;
+    }
+
+    .form-select option { background: var(--bg-elevated); }
+
+    .form-submit { margin-top: 18px; }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       EVENT LOG
+       Terminal-inspired but elegant — minimal visual noise
+    ═══════════════════════════════════════════════════════════════════════ */
+    .event-log-inner {
+      max-height: 440px;
+      overflow-y: auto;
+      padding: 4px 0;
+    }
+
+    .log-entry {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 0 10px;
+      padding: 9px 14px;
+      border-bottom: 1px solid var(--border);
+      animation: logslide 0.2s ease;
+      position: relative;
+    }
+
+    .log-entry:last-child { border-bottom: none; }
+
+    @keyframes logslide {
+      from { opacity: 0; transform: translateY(-3px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Vertical accent bar by operation type */
+    .log-entry::before {
+      content: '';
+      position: absolute;
+      left: 0; top: 10px; bottom: 10px;
+      width: 2px;
+      border-radius: 0 1px 1px 0;
+    }
+    .log-entry.op-INSERT::before { background: var(--green); }
+    .log-entry.op-UPDATE::before { background: var(--yellow-text); }
+    .log-entry.op-DELETE::before { background: var(--red-light); }
+    .log-entry.op-SYSTEM::before { background: var(--border-emphasis); }
+
+    .log-left {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 3px;
+      min-width: 52px;
+    }
+
+    .log-op-badge {
+      font-size: 0.58rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      padding: 2px 5px;
+      border-radius: 3px;
+      border: 1px solid transparent;
+      white-space: nowrap;
+    }
+
+    .log-op-badge.INSERT { background: var(--green-subtle); color: var(--green-light); border-color: var(--green-border); }
+    .log-op-badge.UPDATE { background: var(--yellow-subtle); color: var(--yellow-text); border-color: var(--yellow-border); }
+    .log-op-badge.DELETE { background: var(--red-subtle); color: var(--red-light); border-color: var(--red-border); }
+    .log-op-badge.SYSTEM { background: var(--ivory-dim); color: var(--text-dim); border-color: var(--border-muted); }
+
+    .log-time {
+      font-size: 0.6rem;
+      color: var(--text-dim);
+      font-family: 'JetBrains Mono', monospace;
+      white-space: nowrap;
+    }
+
+    .log-right {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .log-title {
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .log-detail {
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      font-family: 'JetBrains Mono', monospace;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .log-empty {
+      text-align: center;
+      color: var(--text-dim);
+      padding: 32px 14px;
+      font-size: 0.78rem;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       TOAST
+    ═══════════════════════════════════════════════════════════════════════ */
+    #toast-container {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 999;
+    }
+
+    .toast {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-muted);
+      border-radius: var(--radius-sm);
+      padding: 10px 14px;
+      font-size: 0.78rem;
+      font-weight: 500;
+      color: var(--text);
+      min-width: 220px;
+      max-width: 300px;
+      box-shadow: var(--shadow-lg);
+      animation: toastin 0.2s ease;
+    }
+
+    .toast-bar {
+      width: 3px;
+      height: 28px;
+      border-radius: 2px;
+      background: var(--green);
+      flex-shrink: 0;
+      align-self: center;
+    }
+
+    .toast.success .toast-bar { background: var(--green); }
+    .toast.error   .toast-bar { background: var(--red-light); }
+    .toast.info    .toast-bar { background: var(--yellow-text); }
+
+    @keyframes toastin {
+      from { opacity: 0; transform: translateX(12px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       MODAL
+    ═══════════════════════════════════════════════════════════════════════ */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.65);
+      backdrop-filter: blur(5px);
+      -webkit-backdrop-filter: blur(5px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 500;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.18s ease;
+    }
+
+    .modal-backdrop.open {
+      opacity: 1;
+      pointer-events: all;
+    }
+
+    .modal {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-muted);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      width: 90%;
+      max-width: 392px;
+      box-shadow: var(--shadow-lg);
+      transform: translateY(10px) scale(0.98);
+      transition: transform 0.18s ease;
+    }
+
+    .modal-backdrop.open .modal {
+      transform: translateY(0) scale(1);
+    }
+
+    .modal-hd {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 22px;
+    }
+
+    .modal-title {
+      font-size: 0.92rem;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.02em;
+    }
+
+    .modal-close-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-dim);
+      cursor: pointer;
+      font-size: 1rem;
+      padding: 2px 4px;
+      border-radius: 4px;
+      transition: color var(--t), background var(--t);
+      line-height: 1;
+    }
+    .modal-close-btn:hover {
+      color: var(--text);
+      background: var(--bg-hover);
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 22px;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       UTILITY
+    ═══════════════════════════════════════════════════════════════════════ */
+    .stack { display: flex; flex-direction: column; gap: 14px; }
+  </style>
+</head>
+<body>
+
+<!-- ═══ HEADER ════════════════════════════════════════════════════════════════ -->
+<header>
+  <div class="logo">
+    <div class="logo-mark">
+      <!-- Box icon -->
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+        <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+        <line x1="12" y1="22.08" x2="12" y2="12"/>
+      </svg>
+    </div>
+    <div class="logo-wordmark">
+      <div class="logo-name">OrderStream</div>
+      <div class="logo-tagline">Realtime ops</div>
+    </div>
+  </div>
+
+  <div class="hd-right">
+    <button class="pill pill-btn" id="notify-btn" onclick="requestNotificationPermission()">
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+        <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+      </svg>
+      <span id="notify-label">Alerts</span>
+    </button>
+
+    <div class="pill" id="live-badge">
+      <div class="live-dot"></div>
+      <span id="conn-label">Connecting</span>
+    </div>
+  </div>
+</header>
+
+
+<!-- ═══ PAGE ══════════════════════════════════════════════════════════════════ -->
+<div class="page">
+
+  <!-- Page header -->
+  <div class="pg-header">
+    <div class="pg-titles">
+      <h1 class="pg-title">Order Management</h1>
+      <p class="pg-subtitle">
+        Events pushed by <span>PostgreSQL LISTEN/NOTIFY</span> — zero polling
+      </p>
+    </div>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-label">Total Orders</div>
+      <div class="stat-value v-ivory" id="stat-total">—</div>
+    </div>
+    <div class="stat-card accent-yellow">
+      <div class="stat-label">Pending</div>
+      <div class="stat-value v-yellow" id="stat-pending">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Shipped</div>
+      <div class="stat-value" id="stat-shipped">—</div>
+    </div>
+    <div class="stat-card accent-green">
+      <div class="stat-label">Delivered</div>
+      <div class="stat-value v-green" id="stat-delivered">—</div>
+    </div>
+    <div class="stat-card accent-green">
+      <div class="stat-label">Live Events</div>
+      <div class="stat-value v-green" id="stat-events">0</div>
+    </div>
+  </div>
+
+  <!-- Main grid -->
+  <div class="main-grid">
+
+    <!-- ── Left: Orders table ─────────────────────────────────────────── -->
+    <div>
+      <div class="sec-hd">
+        <span class="sec-label">Orders</span>
+        <button class="btn btn-ghost btn-sm" onclick="fetchOrders()">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+            <polyline points="1 4 1 10 7 10"/>
+            <path d="M3.51 15a9 9 0 1 0 .49-3.36"/>
+          </svg>
+          Refresh
+        </button>
+      </div>
+
+      <div class="card table-card">
+        <table id="orders-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Customer</th>
+              <th>Product</th>
+              <th>Status</th>
+              <th>Updated</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="orders-tbody">
+            <tr id="empty-row"><td colspan="6">Loading orders…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── Right: Form + Event log ──────────────────────────────────── -->
+    <div class="stack">
+
+      <!-- Create order form -->
+      <div>
+        <div class="sec-hd">
+          <span class="sec-label">New Order</span>
+        </div>
+        <div class="card">
+          <div class="form-body">
+            <form id="create-form" onsubmit="handleCreate(event)">
+              <div class="form-group">
+                <label class="form-label" for="customer_name">Customer Name</label>
+                <input class="form-input" id="customer_name" type="text" placeholder="e.g. Alice Johnson" required />
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="product_name">Product</label>
+                <input class="form-input" id="product_name" type="text" placeholder="e.g. Wireless Keyboard" required />
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="status">Status</label>
+                <select class="form-select" id="status">
+                  <option value="pending">Pending</option>
+                  <option value="shipped">Shipped</option>
+                  <option value="delivered">Delivered</option>
+                </select>
+              </div>
+              <div class="form-submit">
+                <button type="submit" class="btn btn-primary" id="create-btn">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                    <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                  </svg>
+                  Create Order
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <!-- Event log -->
+      <div>
+        <div class="sec-hd">
+          <span class="sec-label">Event Stream</span>
+          <button class="btn btn-ghost btn-sm" onclick="clearLog()">Clear</button>
+        </div>
+        <div class="card">
+          <div class="event-log-inner" id="event-log">
+            <div class="log-empty" id="log-empty">Waiting for events…</div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /right -->
+  </div><!-- /main-grid -->
+</div><!-- /page -->
+
+
+<!-- ═══ EDIT MODAL ════════════════════════════════════════════════════════════ -->
+<div class="modal-backdrop" id="edit-modal">
+  <div class="modal">
+    <div class="modal-hd">
+      <div class="modal-title">Edit Order</div>
+      <button class="modal-close-btn" onclick="closeModal()">✕</button>
+    </div>
+    <input type="hidden" id="edit-id" />
+    <div class="form-group">
+      <label class="form-label" for="edit-customer">Customer Name</label>
+      <input class="form-input" id="edit-customer" type="text" />
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="edit-product">Product</label>
+      <input class="form-input" id="edit-product" type="text" />
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="edit-status">Status</label>
+      <select class="form-select" id="edit-status">
+        <option value="pending">Pending</option>
+        <option value="shipped">Shipped</option>
+        <option value="delivered">Delivered</option>
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-cancel" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-save" onclick="handleUpdate()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ TOASTS ════════════════════════════════════════════════════════════════ -->
+<div id="toast-container"></div>
+
+
+<!-- ═══ JAVASCRIPT (logic unchanged) ════════════════════════════════════════ -->
+<script>
+  /* ── Config ─────────────────────────────────────────────────────────────── */
+  const API_BASE = `${location.origin}/api/orders`;
+  let eventCount = 0;
+
+  /* ── Socket.IO ──────────────────────────────────────────────────────────── */
+  const socket = io({ transports: ['websocket', 'polling'] });
+
+  socket.on('connect', () => {
+    setBadge(true);
+    addLog('SYSTEM', 'Connected to server', socket.id);
+  });
+
+  socket.on('disconnect', () => {
+    setBadge(false);
+    addLog('SYSTEM', 'Disconnected from server');
+  });
+
+  socket.on('connect_error', () => { setBadge(false); });
+
+  socket.on('orderUpdated', (payload) => {
+    eventCount++;
+    document.getElementById('stat-events').textContent = eventCount;
+
+    const { operation, data } = payload;
+    addLog(operation, `Order #${data.id}`, formatLogDetail(operation, data));
+
+    if (operation === 'INSERT')      { prependRow(data); flashRow(data.id, 'insert'); }
+    else if (operation === 'UPDATE') { updateRow(data);  flashRow(data.id, 'update'); }
+    else if (operation === 'DELETE') { removeRow(data.id); }
+
+    recalcStats();
+    showToast(`${operation}: Order #${data.id}`, operation === 'DELETE' ? 'error' : 'success');
+
+    if (Notification.permission === 'granted' && !document.hasFocus()) {
+      try {
+        new Notification(`${operation}: Order #${data.id}`, {
+          body: `Customer: ${data.customer_name}\nProduct: ${data.product_name}\nStatus: ${data.status}`,
+          icon: 'https://cdn-icons-png.flaticon.com/512/3514/3514491.png',
+          tag: `order-${data.id}-${operation}`
+        });
+      } catch (e) { console.error('[Notification]', e); }
+    }
+  });
+
+  /* ── REST helpers ───────────────────────────────────────────────────────── */
+  async function apiFetch(path, opts = {}) {
+    const res  = await fetch(API_BASE + path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error?.message || 'Request failed');
+    return json;
+  }
+
+  async function fetchOrders() {
+    try {
+      const { data } = await apiFetch('');
+      renderTable(data);
+      recalcStats();
+    } catch (err) { showToast('Failed to load orders: ' + err.message, 'error'); }
+  }
+
+  async function handleCreate(e) {
+    e.preventDefault();
+    const btn = document.getElementById('create-btn');
+    btn.disabled = true;
+    btn.textContent = 'Creating…';
+    try {
+      await apiFetch('', {
+        method: 'POST',
+        body: JSON.stringify({
+          customer_name: document.getElementById('customer_name').value.trim(),
+          product_name:  document.getElementById('product_name').value.trim(),
+          status:        document.getElementById('status').value,
+        }),
+      });
+      document.getElementById('create-form').reset();
+    } catch (err) { showToast('Error: ' + err.message, 'error'); }
+    finally {
+      btn.disabled = false;
+      btn.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Create Order`;
+    }
+  }
+
+  async function handleUpdate() {
+    const id = document.getElementById('edit-id').value;
+    try {
+      await apiFetch(`/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          customer_name: document.getElementById('edit-customer').value.trim(),
+          product_name:  document.getElementById('edit-product').value.trim(),
+          status:        document.getElementById('edit-status').value,
+        }),
+      });
+      closeModal();
+    } catch (err) { showToast('Error: ' + err.message, 'error'); }
+  }
+
+  async function deleteOrder(id) {
+    if (!confirm(`Delete order #${id}? This cannot be undone.`)) return;
+    try { await apiFetch(`/${id}`, { method: 'DELETE' }); }
+    catch (err) { showToast('Error: ' + err.message, 'error'); }
+  }
+
+  /* ── Table DOM ──────────────────────────────────────────────────────────── */
+  function renderTable(orders) {
+    const tbody = document.getElementById('orders-tbody');
+    tbody.innerHTML = '';
+    if (!orders.length) {
+      tbody.innerHTML = '<tr id="empty-row"><td colspan="6">No orders yet. Create one above.</td></tr>';
+      return;
+    }
+    orders.forEach(prependRow);
+  }
+
+  function buildRow(order) {
+    const tr = document.createElement('tr');
+    tr.id = `row-${order.id}`;
+    tr.innerHTML = `
+      <td class="c-id">#${order.id}</td>
+      <td class="c-customer">${esc(order.customer_name)}</td>
+      <td class="c-product">${esc(order.product_name)}</td>
+      <td>
+        <span class="badge badge-${order.status}">
+          <span class="badge-dot"></span>${order.status}
+        </span>
+      </td>
+      <td class="c-date">${fmtDate(order.updated_at)}</td>
+      <td>
+        <div class="row-actions">
+          <button class="btn btn-ghost btn-sm"
+            onclick="openModal(${order.id},'${esc(order.customer_name)}','${esc(order.product_name)}','${order.status}')">Edit</button>
+          <button class="btn btn-danger btn-sm"
+            onclick="deleteOrder(${order.id})">Delete</button>
+        </div>
+      </td>`;
+    return tr;
+  }
+
+  function prependRow(order) {
+    const tbody = document.getElementById('orders-tbody');
+    const empty = document.getElementById('empty-row');
+    if (empty) empty.remove();
+    const existing = document.getElementById(`row-${order.id}`);
+    if (existing) { updateRow(order); return; }
+    tbody.prepend(buildRow(order));
+  }
+
+  function updateRow(order) {
+    const tr = document.getElementById(`row-${order.id}`);
+    if (tr) tr.replaceWith(buildRow(order));
+  }
+
+  function removeRow(id) {
+    const tr = document.getElementById(`row-${id}`);
+    if (tr) tr.remove();
+    if (!document.querySelector('#orders-tbody tr')) {
+      document.getElementById('orders-tbody').innerHTML =
+        '<tr id="empty-row"><td colspan="6">No orders yet. Create one above.</td></tr>';
+    }
+  }
+
+  function flashRow(id, type) {
+    const tr = document.getElementById(`row-${id}`);
+    if (!tr) return;
+    tr.classList.remove('flash-insert','flash-update','flash-delete');
+    void tr.offsetWidth;
+    tr.classList.add(`flash-${type}`);
+    setTimeout(() => tr.classList.remove(`flash-${type}`), 1300);
+  }
+
+  /* ── Stats ──────────────────────────────────────────────────────────────── */
+  function recalcStats() {
+    const rows = [...document.querySelectorAll('#orders-tbody tr[id^="row-"]')];
+    const c = { pending:0, shipped:0, delivered:0 };
+    rows.forEach(tr => {
+      const b = tr.querySelector('.badge');
+      if (b) c[b.textContent.trim()]++;
+    });
+    document.getElementById('stat-total').textContent     = rows.length;
+    document.getElementById('stat-pending').textContent   = c.pending;
+    document.getElementById('stat-shipped').textContent   = c.shipped;
+    document.getElementById('stat-delivered').textContent = c.delivered;
+  }
+
+  /* ── Event log ──────────────────────────────────────────────────────────── */
+  function addLog(operation, title, detail = '') {
+    const log   = document.getElementById('event-log');
+    const empty = document.getElementById('log-empty');
+    if (empty) empty.remove();
+
+    const entry = document.createElement('div');
+    entry.className = `log-entry op-${operation}`;
+    entry.innerHTML = `
+      <div class="log-left">
+        <span class="log-op-badge ${operation}">${operation}</span>
+        <span class="log-time">${new Date().toLocaleTimeString()}</span>
+      </div>
+      <div class="log-right">
+        <div class="log-title">${esc(title)}</div>
+        ${detail ? `<div class="log-detail">${esc(detail)}</div>` : ''}
+      </div>`;
+
+    log.prepend(entry);
+    while (log.children.length > 60) log.removeChild(log.lastChild);
+  }
+
+  function formatLogDetail(op, data) {
+    if (op === 'DELETE') return `removed · ${data.customer_name}`;
+    return `${data.customer_name} · ${data.product_name} · ${data.status}`;
+  }
+
+  function clearLog() {
+    document.getElementById('event-log').innerHTML =
+      '<div class="log-empty" id="log-empty">Waiting for events…</div>';
+    eventCount = 0;
+    document.getElementById('stat-events').textContent = '0';
+  }
+
+  /* ── Modal ──────────────────────────────────────────────────────────────── */
+  function openModal(id, customer, product, status) {
+    document.getElementById('edit-id').value       = id;
+    document.getElementById('edit-customer').value = customer;
+    document.getElementById('edit-product').value  = product;
+    document.getElementById('edit-status').value   = status;
+    document.getElementById('edit-modal').classList.add('open');
+  }
+
+  function closeModal() {
+    document.getElementById('edit-modal').classList.remove('open');
+  }
+
+  document.getElementById('edit-modal').addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeModal();
+  });
+
+  /* ── Toast ──────────────────────────────────────────────────────────────── */
+  function showToast(msg, type = 'info') {
+    const c = document.getElementById('toast-container');
+    const t = document.createElement('div');
+    t.className = `toast ${type}`;
+    t.innerHTML = `<div class="toast-bar"></div><span>${esc(msg)}</span>`;
+    c.appendChild(t);
+    setTimeout(() => t.remove(), 3500);
+  }
+
+  /* ── Connection badge ───────────────────────────────────────────────────── */
+  function setBadge(connected) {
+    const badge = document.getElementById('live-badge');
+    const label = document.getElementById('conn-label');
+    badge.className = 'pill' + (connected ? ' connected' : '');
+    label.textContent = connected ? 'Live' : 'Disconnected';
+  }
+
+  /* ── Utility ────────────────────────────────────────────────────────────── */
+  function esc(str = '') {
+    return String(str)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  function fmtDate(ts) {
+    if (!ts) return '—';
+    return new Date(ts).toLocaleString(undefined, {
+      month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'
+    });
+  }
+
+  /* ── Desktop Notifications ──────────────────────────────────────────────── */
+  async function requestNotificationPermission() {
+    if (!('Notification' in window)) {
+      showToast('Notifications not supported by this browser.', 'error');
+      return;
+    }
+    try {
+      const p = await Notification.requestPermission();
+      updateNotifyButton(p);
+      if (p === 'granted') {
+        showToast('Desktop notifications enabled.', 'success');
+        new Notification('OrderStream', {
+          body: 'Real-time alerts are now active.',
+          icon: 'https://cdn-icons-png.flaticon.com/512/3514/3514491.png'
+        });
+      } else if (p === 'denied') {
+        showToast('Notifications blocked. Enable in browser settings.', 'error');
+      }
+    } catch (err) { console.error(err); }
+  }
+
+  function updateNotifyButton(permission) {
+    const btn   = document.getElementById('notify-btn');
+    const label = document.getElementById('notify-label');
+    if (!btn) return;
+    if (permission === 'granted') {
+      btn.style.color = '#00C360';
+      btn.style.borderColor = 'rgba(0,195,96,0.35)';
+      label.textContent = 'On';
+    } else if (permission === 'denied') {
+      btn.style.color = '#E05545';
+      btn.style.borderColor = 'rgba(224,85,69,0.35)';
+      label.textContent = 'Blocked';
+    } else {
+      btn.style.color = '';
+      btn.style.borderColor = '';
+      label.textContent = 'Alerts';
+    }
+  }
+
+  /* ── Boot ───────────────────────────────────────────────────────────────── */
+  if ('Notification' in window) updateNotifyButton(Notification.permission);
+  else { const b = document.getElementById('notify-btn'); if (b) b.style.display = 'none'; }
+
+  fetchOrders();
+</script>
+</body>
+</html>
