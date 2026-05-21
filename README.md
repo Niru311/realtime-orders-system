@@ -652,6 +652,4 @@ To meet the requirements of a resilient, high-performance, real-time tracking da
 
 ---
 
-## 📄 License
 
-MIT
