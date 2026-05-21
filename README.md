@@ -14,25 +14,25 @@ This section demonstrates the real-time event-driven architecture in action. Mul
 ![Main Dashboard Screenshot](./dashboard.png)
 
 ### Real-Time Sync Across Tabs
-![Realtime Sync Screenshot](./screenshots/realtime-sync.png)
+![Realtime Sync Screenshot](./realtime-sync.png)
 
 ### PostgreSQL Database / pgAdmin View
-![PostgreSQL Database / pgAdmin View](./screenshots/database.png)
+![PostgreSQL Database / pgAdmin View](./database.png)
 
 ### Terminal Showing Server Startup Logs
-![Terminal Showing Server Startup Logs](./screenshots/startup-logs.png)
+![Terminal Showing Server Startup Logs](./startup-logs.png)
 
 ### Real-Time INSERT Event Demo
-![Real-Time INSERT Event Demo](./screenshots/insert-demo.png)
+![Real-Time INSERT Event Demo](./insert-demo.png)
 
 ### Real-Time UPDATE Event Demo
-![Real-Time UPDATE Event Demo](./screenshots/update-demo.png)
+![Real-Time UPDATE Event Demo](./update-demo.png)
 
 ### Real-Time DELETE Event Demo
-![Real-Time DELETE Event Demo](./screenshots/delete-demo.png)
+![Real-Time DELETE Event Demo](./delete-demo.png)
 
 ### Socket.IO Client Connection Logs
-![Socket.IO Client Connection Logs](./screenshots/socket-logs.png)
+![Socket.IO Client Connection Logs](./socket-logs.png)
 
 ---
 
